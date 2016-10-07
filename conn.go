@@ -96,7 +96,7 @@ func (c *Connection) Write(b []byte) (n int, err error) {
 		Window:      64420,
 		Checksum:    0,
 		Urgent:      0,
-		Options:     []*tcp.Option{},
+		Options:     []tcp.Option{},
 		Payload:     b,
 	}
 
@@ -223,7 +223,7 @@ func (c *Connection) Close() error {
 		Window:      64420,
 		Checksum:    0,
 		Urgent:      0,
-		Options:     []*tcp.Option{},
+		Options:     []tcp.Option{},
 		Payload:     []byte{},
 	}
 
@@ -265,7 +265,7 @@ func (c *Connection) Receive() chan []byte {
 	return c.Recv
 }
 
-func (c *Connection) Open(src net.IP, dst net.IP) error {
+func (c *Connection) Open(src net.IP, dst net.IP, port int) error {
 	c.Src = src
 	c.Dst = dst
 	c.closed = false
@@ -294,7 +294,7 @@ func (c *Connection) Open(src net.IP, dst net.IP) error {
 	// this should be verified if it is free
 	c.SourcePort = 1000 + uint16(c.Stack.r.Intn(32768))
 
-	c.DestinationPort = 80 // 443
+	c.DestinationPort = uint16(port)
 
 	// prevent running
 	sendNext := uint32(c.Stack.r.Intn(2147483648))
@@ -311,7 +311,7 @@ func (c *Connection) Open(src net.IP, dst net.IP) error {
 		Window:      64420,
 		Checksum:    0,
 		Urgent:      0,
-		Options:     []*tcp.Option{},
+		Options:     []tcp.Option{},
 		Payload:     []byte{},
 	}
 

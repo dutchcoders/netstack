@@ -26,6 +26,8 @@ type Stack struct {
 	src net.IP
 }
 
+var ErrNoState = errors.New("No state for packet.")
+
 func getIPforInterface(intf string) (net.IP, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -46,9 +48,9 @@ func getIPforInterface(intf string) (net.IP, error) {
 		for _, addr := range addrs {
 			switch v := addr.(type) {
 			case *net.IPNet:
-				return v.IP
+				return v.IP, nil
 			case *net.IPAddr:
-				return v.IP
+				return v.IP, nil
 			}
 		}
 	}
@@ -88,7 +90,7 @@ func New(intf string) (*Stack, error) {
 	}
 }
 
-func (s *Stack) Connect(dest net.IP) (*Connection, error) {
+func (s *Stack) Connect(dest net.IP, port int) (*Connection, error) {
 	conn := &Connection{
 		Connected: make(chan bool, 1),
 		Stack:     s,
@@ -97,7 +99,7 @@ func (s *Stack) Connect(dest net.IP) (*Connection, error) {
 		Dst:       dest,
 	}
 
-	if err := conn.Open(s.src, dest); err != nil {
+	if err := conn.Open(s.src, dest, port); err != nil {
 		return nil, err
 	}
 
@@ -201,8 +203,6 @@ type SendP struct {
 	to   syscall.Sockaddr
 }
 
-var ErrNoState = errors.New("No state for packet.")
-
 func (s *Stack) send(data []byte, to syscall.Sockaddr) error {
 	//s.m.Lock()
 	//defer s.m.Unlock()
@@ -235,6 +235,15 @@ func (s *Stack) handleTCP(iph *ipv4.Header, data []byte) error {
 	state := GetState(iph, th)
 	if state != nil {
 	} else if false /*  listening on port */ {
+		// no state found.
+		if !th.HasFlag(tcp.SYN) {
+			return ErrNoState
+		}
+
+		// if listening on port
+
+		// send SYN+ACK
+		// add state
 	} else {
 		// fmt.Printf("No state for: %#v\n", th)
 		// SEND RST?
@@ -294,7 +303,7 @@ func (s *Stack) handleTCP(iph *ipv4.Header, data []byte) error {
 				Window:      64420,
 				Checksum:    0,
 				Urgent:      0,
-				Options:     []*tcp.Option{},
+				Options:     []tcp.Option{},
 				Payload:     []byte{},
 			}
 
@@ -340,7 +349,7 @@ func (s *Stack) handleTCP(iph *ipv4.Header, data []byte) error {
 						Window:      64420,
 						Checksum:    0,
 						Urgent:      0,
-						Options:     []*tcp.Option{},
+						Options:     []tcp.Option{},
 						Payload:     []byte{},
 					}
 
@@ -366,7 +375,7 @@ func (s *Stack) handleTCP(iph *ipv4.Header, data []byte) error {
 						Window:      64420,
 						Checksum:    0,
 						Urgent:      0,
-						Options:     []*tcp.Option{},
+						Options:     []tcp.Option{},
 						Payload:     []byte{},
 					}
 
@@ -406,7 +415,7 @@ func (s *Stack) handleTCP(iph *ipv4.Header, data []byte) error {
 					Window:      64420,
 					Checksum:    0,
 					Urgent:      0,
-					Options:     []*tcp.Option{},
+					Options:     []tcp.Option{},
 					Payload:     []byte{},
 				}
 
@@ -444,7 +453,7 @@ func (s *Stack) handleTCP(iph *ipv4.Header, data []byte) error {
 					Window:      64420,
 					Checksum:    0,
 					Urgent:      0,
-					Options:     []*tcp.Option{},
+					Options:     []tcp.Option{},
 					Payload:     []byte{},
 				}
 
