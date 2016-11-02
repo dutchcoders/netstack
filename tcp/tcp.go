@@ -14,7 +14,7 @@ GNU General Public License for more details.
 For full license details see <http://www.gnu.org/licenses/>.
 */
 
-package netstack
+package tcp
 
 import (
 	"encoding/binary"
@@ -166,10 +166,13 @@ func Parse(data []byte) (Header, error) {
 	return h, h.Unmarshal(data)
 }
 
+func (hdr *Header) String() string {
+	return fmt.Sprintf("tcp sport=%d, dport=%d, ctrl=%d, seqnum=%d, acknum=%d", hdr.Source, hdr.Destination, hdr.Ctrl, hdr.SeqNum, hdr.AckNum)
+}
+
 // why EOF on ubuntu with 22?
 // https://github.com/google/gopacket/blob/master/layers/tcp.go<Paste>
 func (hdr *Header) Unmarshal(data []byte) error {
-	// TODO: don't use the reader for this
 	hdr.Source = binary.BigEndian.Uint16(data[0:2])
 	hdr.Destination = binary.BigEndian.Uint16(data[2:4])
 	hdr.SeqNum = binary.BigEndian.Uint32(data[4:8])
@@ -224,11 +227,12 @@ func (hdr *Header) Unmarshal(data []byte) error {
 		}
 		data = data[opt.OptionLength:]
 	}
+
 	return nil
 }
 
 func (hdr *Header) HasFlag(flagBit Flag) bool {
-	return hdr.Ctrl&flagBit != 0
+	return hdr.Ctrl&flagBit == flagBit
 }
 
 func to4byte(addr string) [4]byte {
@@ -267,12 +271,12 @@ func (t *Header) Marshal() ([]byte, error) {
 			optionLength += 2 + len(o.OptionData)
 		}
 	}
-	if /*opts.FixLengths */ true {
-		if rem := optionLength % 4; rem != 0 {
-			t.Padding = lotsOfZeros[:4-rem]
-		}
-		t.DataOffset = uint8((len(t.Padding) + optionLength + 20) / 4)
+
+	if rem := optionLength % 4; rem != 0 {
+		t.Padding = lotsOfZeros[:4-rem]
 	}
+
+	t.DataOffset = uint8((len(t.Padding) + optionLength + 20) / 4)
 
 	/*
 		bytes, err := b.PrependBytes(20 + optionLength + len(t.Padding))
@@ -280,6 +284,7 @@ func (t *Header) Marshal() ([]byte, error) {
 			return err
 		}
 	*/
+
 	bytes := make([]byte, 20+optionLength+len(t.Padding)+len(t.Payload))
 	copy(bytes[20+optionLength+len(t.Padding):], t.Payload)
 
@@ -287,10 +292,12 @@ func (t *Header) Marshal() ([]byte, error) {
 	binary.BigEndian.PutUint16(bytes[2:], uint16(t.Destination))
 	binary.BigEndian.PutUint32(bytes[4:], t.SeqNum)
 	binary.BigEndian.PutUint32(bytes[8:], t.AckNum)
+
 	bytes[12] = t.DataOffset << 4
 	bytes[13] = ((t.ECN << 6) | uint8(t.Ctrl))
 	binary.BigEndian.PutUint16(bytes[14:], t.Window)
 	binary.BigEndian.PutUint16(bytes[18:], t.Urgent)
+
 	start := 20
 	for _, o := range t.Options {
 		bytes[start] = byte(o.OptionType)
@@ -298,15 +305,16 @@ func (t *Header) Marshal() ([]byte, error) {
 		case 0, 1:
 			start++
 		default:
-			if /* opts.FixLengths */ true {
-				o.OptionLength = uint8(len(o.OptionData) + 2)
-			}
+			o.OptionLength = uint8(len(o.OptionData) + 2)
+
 			bytes[start+1] = o.OptionLength
 			copy(bytes[start+2:start+len(o.OptionData)+2], o.OptionData)
 			start += int(o.OptionLength)
 		}
 	}
+
 	copy(bytes[start:], t.Padding)
+
 	/*
 		if /* opts.ComputeChecksums * true {
 			// zero out checksum bytes in current serialization.

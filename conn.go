@@ -2,18 +2,19 @@ package netstack
 
 import (
 	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net"
-	"syscall"
 	"time"
 
+	ipv4 "github.com/dutchcoders/netstack/ipv4"
 	tcp "github.com/dutchcoders/netstack/tcp"
-	"golang.org/x/net/ipv4"
 )
 
 type Connection struct {
-	closed    bool
+	closed  bool
+	closing bool
+
 	Connected chan bool
 
 	Src, Dst                    net.IP
@@ -42,6 +43,7 @@ func (conn *Connection) Read(b []byte) (n int, err error) {
 
 	select {
 	case <-time.After(30 * time.Second):
+		fmt.Println("Timeout occured")
 		return 0, errors.New("Timeout occured.")
 	case _, ok := <-conn.Recv:
 		if !ok {
@@ -59,6 +61,10 @@ func (conn *Connection) Read(b []byte) (n int, err error) {
 // Write can be made to time out and return a Error with Timeout() == true
 // after a fixed time limit; see SetDeadline and SetWriteDeadline.
 func (c *Connection) Write(b []byte) (n int, err error) {
+	if c.closing || c.closed {
+		return 0, errors.New("Writing to a closed connection.")
+	}
+
 	state := c.current
 
 	state.Lock()
@@ -78,12 +84,6 @@ func (c *Connection) Write(b []byte) (n int, err error) {
 		ID:       state.ID,
 	}
 
-	data, err := iph.Marshal()
-	if err != nil {
-		log.Printf("Error sendto: %#v", err.Error())
-		return 0, err
-	}
-
 	th := tcp.Header{
 		Source:      c.SourcePort,
 		Destination: c.DestinationPort,
@@ -100,31 +100,20 @@ func (c *Connection) Write(b []byte) (n int, err error) {
 		Payload:     b,
 	}
 
-	data2, err := th.MarshalWithChecksum(c.Src, c.Dst)
-	if err != nil {
+	if data, err := th.Marshal(); err == nil {
+		iph.Payload = data
+	} else {
 		return 0, err
 	}
 
-	data = append(data, data2...)
+	if data, err := iph.Marshal(); err == nil {
+		c.Stack.send(data)
+	} else {
+		return 0, err
+	}
 
-	to := &syscall.SockaddrInet4{Port: int(0), Addr: to4byte(c.Dst.String())} //[4]byte{dest[0], dest[1], dest[2], dest[3]}}
-
-	c.Stack.send(data, to)
-
-	/*
-		err = syscall.Sendto(c.Stack.fd, data, 0, to)
-		if err != nil {
-			return 0, err
-		}
-	*/
-
-	// add to transmission queue as well
 	state.ID++
-
 	state.SendNext += uint32(len(b))
-
-	// todo(nl5887): wait for ack, before returning?
-	// not always send using PSH
 
 	return len(b), nil
 }
@@ -178,6 +167,15 @@ func (c *Connection) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
+func (c *Connection) close() {
+	if c.closed {
+		return
+	}
+
+	c.closed = true
+	close(c.Recv)
+}
+
 // Close closes the connection.
 // Any blocked Read or Write operations will be unblocked and return errors.
 func (c *Connection) Close() error {
@@ -187,10 +185,12 @@ func (c *Connection) Close() error {
 	state.Lock()
 	defer state.Unlock()
 
-	if c.closed {
+	if c.closing || c.closed {
 		// already closed
 		return nil
 	}
+
+	c.closing = true
 
 	iph := ipv4.Header{
 		Version:  4,
@@ -204,11 +204,6 @@ func (c *Connection) Close() error {
 		Dst:      c.Dst,
 		Options:  []byte{},
 		ID:       state.ID,
-	}
-
-	data, err := iph.Marshal()
-	if err != nil {
-		log.Printf("Error sendto: %#v", err.Error())
 	}
 
 	th := tcp.Header{
@@ -227,31 +222,22 @@ func (c *Connection) Close() error {
 		Payload:     []byte{},
 	}
 
-	data2, err := th.MarshalWithChecksum(iph.Src, iph.Dst)
-	if err != nil {
-		log.Printf("Error sendto: %#v", err.Error())
-	}
-
-	data = append(data, data2...)
-
-	// dump("send packet", data, layers.LayerTypeIPv4)
-
-	to := &syscall.SockaddrInet4{Port: int(0), Addr: to4byte(iph.Dst.String())} //[4]byte{dest[0], dest[1], dest[2], dest[3]}}
-
-	c.Stack.send(data, to)
-	/*
-
-		err = syscall.Sendto(c.Stack.fd, data, 0, to)
-		if err != nil {
-			log.Printf("Error sendto: %#v\n", err.Error())
-		}
-	*/
-
-	//	c.current.Current = c.current.stateFinWait1 // stateFinWait1
 	c.current.SocketState = SocketFinWait1
 
-	state.SendNext++
+	if data, err := th.Marshal(); err != nil {
+		return err
+	} else {
+		iph.Payload = data
+	}
+
+	if data, err := iph.Marshal(); err != nil {
+		return err
+	} else {
+		c.Stack.send(data)
+	}
+
 	state.ID++
+	state.SendNext++
 
 	// wait for close to be ack'ed
 
@@ -270,7 +256,32 @@ func (c *Connection) Open(src net.IP, dst net.IP, port int) error {
 	c.Dst = dst
 	c.closed = false
 
+	// this should be verified if it is free
+	c.SourcePort = 1000 + uint16(c.Stack.r.Intn(32768))
+	c.DestinationPort = uint16(port)
+
+	// prevent running
+	sendNext := uint32(c.Stack.r.Intn(2147483648))
+
 	id := int(c.Stack.r.Uint32() % 65535)
+
+	state := &State{
+		SrcPort:  c.SourcePort,
+		DestPort: c.DestinationPort,
+
+		SrcIP:  src,
+		DestIP: dst,
+
+		Last: time.Now(),
+		ID:   id,
+
+		RecvNext: 0,
+		SendNext: sendNext,
+
+		Conn: c,
+	}
+
+	state.SocketState = SocketSynSent
 
 	iph := ipv4.Header{
 		Version:  4,
@@ -285,19 +296,6 @@ func (c *Connection) Open(src net.IP, dst net.IP, port int) error {
 		Options:  []byte{},
 		ID:       id,
 	}
-
-	data, err := iph.Marshal()
-	if err != nil {
-		return err
-	}
-
-	// this should be verified if it is free
-	c.SourcePort = 1000 + uint16(c.Stack.r.Intn(32768))
-
-	c.DestinationPort = uint16(port)
-
-	// prevent running
-	sendNext := uint32(c.Stack.r.Intn(2147483648))
 
 	th := tcp.Header{
 		Source:      c.SourcePort,
@@ -321,47 +319,24 @@ func (c *Connection) Open(src net.IP, dst net.IP, port int) error {
 	// nop
 	// Window scale
 
-	data2, err := th.MarshalWithChecksum(src, dst)
-	if err != nil {
+	if data, err := th.Marshal(); err == nil {
+		iph.Payload = data
+	} else {
 		return err
 	}
 
-	data = append(data, data2...)
-
-	state := &State{
-		SrcPort:  th.Source,
-		DestPort: th.Destination,
-
-		SrcIP:  iph.Src,
-		DestIP: iph.Dst,
-
-		Last: time.Now(),
-		ID:   id,
-
-		RecvNext: th.AckNum,
-		SendNext: sendNext,
-
-		Conn: c,
+	if data, err := iph.Marshal(); err == nil {
+		c.Stack.send(data)
+	} else {
+		return err
 	}
-
-	state.SocketState = SocketSynSent
-	c.current = state
-
-	stateTable = append(stateTable, state)
-
-	to := &syscall.SockaddrInet4{Port: int(0), Addr: to4byte(dst.String())} //[4]byte{dest[0], dest[1], dest[2], dest[3]}}
-	c.Stack.send(data, to)
-
-	/*
-		err = syscall.Sendto(c.Stack.fd, data, 0, to)
-		if err != nil {
-			return err
-		}
-	*/
 
 	state.ID++
 	state.SendNext = state.SendNext + 1
 
-	// wait for established, timeout or error, using channel
+	c.current = state
+
+	stateTable = append(stateTable, state)
+
 	return nil
 }
