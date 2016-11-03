@@ -1,19 +1,20 @@
 # netstack
 Custom network stack in Go
 
+This networkstack implements (very) basic and rudimentary support for connecting tcp streams. There needs to be a lot to be implemented and optimised.
 
 # Configuration (for now)
 
+Linux will send RST packets for unknown tcp packets, so this needs to be disabled using iptables. 
+
 ```
-iptables -t filter -I OUTPUT -p tcp --sport 9999 --tcp-flags RST RST -j DROP
+iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 iptables -I OUTPUT -p icmp --icmp-type destination-unreachable -j DROP
 ```
 
+# Samples
 
-// package stack
-// stack.Interface = xxx
-// go stack.Start()
-// stack.Stop()
+See samples folder.
 
 # References
 
