@@ -50,7 +50,7 @@ func New(intf string) (*Stack, error) {
 	} else if epfd, err := syscall.EpollCreate1(0); err != nil {
 		return nil, fmt.Errorf("epoll_create1: %s", err.Error())
 	} else if err = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, fd, &syscall.EpollEvent{
-		Events: syscall.EPOLLIN | syscall.EPOLLERR | /* syscall.EPOLL_NONBLOCK | */ syscall.EPOLLOUT,
+		Events: syscall.EPOLLIN | syscall.EPOLLERR, /*| syscall.EPOLL_NONBLOCK  | syscall.EPOLLOUT | syscall.EPOLLET*/
 		Fd:     int32(fd),
 	}); err != nil {
 		return nil, fmt.Errorf("epollctl: %s", err.Error())
@@ -121,10 +121,6 @@ func (s *Stack) Start() error {
 					s.handleEventPollErr(events[ev])
 				}
 
-				if events[ev].Events&syscall.EPOLLOUT == syscall.EPOLLOUT {
-					s.handleEventPollOut(events[ev])
-				}
-
 				if events[ev].Events&syscall.EPOLLIN == syscall.EPOLLIN {
 					s.handleEventPollIn(events[ev])
 				}
@@ -172,26 +168,6 @@ func (s *Stack) handleEventPollErr(event syscall.EpollEvent) {
 	} else {
 		fmt.Println("Error val", v)
 	}
-}
-
-func (s *Stack) handleEventPollOut(event syscall.EpollEvent) {
-	s.m.Lock()
-	defer s.m.Unlock()
-
-	if len(s.sendQueue) == 0 {
-		return
-	}
-
-	a := s.sendQueue
-
-	for _, data := range a {
-		to := &syscall.SockaddrInet4{Port: int(0), Addr: [4]byte{data[16], data[17], data[18], data[19]}} //[4]byte{dest[0], dest[1], dest[2], dest[
-		if err := syscall.Sendto((int(event.Fd)), data, 0, to); err != nil {
-			fmt.Println(fmt.Sprintf("Error: %s %d\n", err.Error(), len(data)))
-		}
-	}
-
-	s.sendQueue = [][]byte{}
 }
 
 func (s *Stack) send(data []byte) error {
@@ -262,9 +238,11 @@ func (s *Stack) send(data []byte) error {
 	data[20+16] = uint8((csum >> 8) & 0xFF)
 	data[20+17] = uint8(csum & 0xFF)
 
-	s.m.Lock()
-	s.sendQueue = append(s.sendQueue, data)
-	s.m.Unlock()
+	to := &syscall.SockaddrInet4{Port: int(0), Addr: [4]byte{data[16], data[17], data[18], data[19]}} //[4]byte{dest[0], dest[1], dest[2], dest[
+	if err := syscall.Sendto((int(s.fd)), data, 0, to); err != nil {
+		fmt.Println(fmt.Sprintf("Error: %s %d\n", err.Error(), len(data)))
+		return err
+	}
 
 	return nil
 }
@@ -308,10 +286,14 @@ func (s *Stack) handleTCP(iph *ipv4.Header, data []byte) error {
 	}
 
 	if state.RecvNext != th.SeqNum {
-		fmt.Printf("Unexpected packet: id=%d, seqnum=%d, expected %d\n", iph.ID, th.SeqNum, state.RecvNext)
+		// fmt.Printf("Unexpected packet: id=%d, seqnum=%d, expected %d (%d)\n%s %s\n", iph.ID, th.SeqNum, state.RecvNext, int(state.RecvNext)-int(th.SeqNum), iph.String(), th.String())
+		// we could queue those packets for later usage
 		return nil
 	}
 
+	// should keep track of ack (sendnext) here as well, to see which of our
+	// packets are acked already, and what we need to resend. Currently there
+	// is no resend in place
 	state.RecvNext += uint32(len(th.Payload))
 
 	if th.HasFlag(tcp.SYN) || th.HasFlag(tcp.FIN) {

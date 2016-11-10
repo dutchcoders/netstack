@@ -17,7 +17,7 @@ func init() {
 }
 
 const (
-	MaxEpollEvents    = 2048
+	MaxEpollEvents    = 64
 	DefaultBufferSize = 65535
 )
 
