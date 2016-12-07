@@ -3,7 +3,13 @@ Custom network stack in Go
 
 This networkstack implements (very) basic and rudimentary support for connecting tcp streams. There needs to be a lot to be implemented and optimised.
 
-# Configuration (for now)
+# Projects
+
+Currently netstack is being used by the following projects:
+
+* https://github.com/dutchcoders/anam
+
+# Configuration 
 
 Linux will send RST packets for unknown tcp packets, so this needs to be disabled using iptables. 
 
